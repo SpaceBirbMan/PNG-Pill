@@ -10,6 +10,7 @@
 #include <thread>
 #include <cstring>
 #include <functional>
+#include "sockets.h"
 
 
 constexpr double PI = 3.141592653589793;
@@ -33,7 +34,7 @@ struct AppConfig {
     uint32_t bgColor = 0x000000;
     int windowWidth = 800;
     int windowHeight = 600;
-    std::string inputDeviceName = "default";
+    std::string micName = "default";
     float micThreshold = 0.0075f;
     float micGain = 1.0f;
     std::string spriteDir;
@@ -43,17 +44,23 @@ struct AppConfig {
     bool enableShaking = true;
     float shakingAmp = 1.0f;
     float shakingFreq = 1.0f;
-    int fps = 30; // vsync?
+    int fps = 60; // vsync?
     bool globalHookingAcceptable = false;
     bool useCpuRendering = false;
     SpriteAlignment alignment = SpriteAlignment::Centered;
     bool usebilinearinterpolationoncpu = true;
     int numberOfThreadsForCpuRender = -1; // то есть автоматическое определение (должно быть (потом))
+    int webSocket = 8080;
 };
 
 struct ContextMenuItem {
     std::string label;
     std::function<void()> action;
+};
+
+struct RawPixels {
+    uint8_t* pixels = nullptr;
+    size_t size = 0;
 };
 
 struct MainLoopState {
@@ -63,6 +70,7 @@ struct MainLoopState {
     bool prevSpeak = false;
     bool blink = false;
     bool isBreathing = false;
+    bool webDisplaying = false;
 
     int currentSpriteIndex = 0;
     int prevFrameIndex = -1;
@@ -72,6 +80,8 @@ struct MainLoopState {
     double globalTime = 0.0;
     double breathPhase = 0.0;
     float breathScale = 1.0f;
+
+    RawPixels currentFrameRawPixels;
 
     Uint32 lastBlink = 0;
     Uint32 blinkStart = 0;
@@ -96,6 +106,8 @@ struct MainLoopState {
     int lastLeftClickY = -1;
     const Uint32 DOUBLE_CLICK_THRESHOLD_MS = 500;
     const int DOUBLE_CLICK_THRESHOLD_PX = 5;
+
+    uint8_t** rawFrame = nullptr;
 
     std::vector<SDL_Texture*> contextMenuTextures;
     TTF_Font* menuFont = nullptr;
@@ -143,14 +155,9 @@ static void hexToRgb(const std::string& hex, Uint8& r, Uint8& g, Uint8& b) {
 }
 
 static bool parseBool(const std::string& s) {
-    try {
-        std::string lower = s;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        return lower == "true";
-    }
-    catch (...) {
-        std::cerr << "Failed to parse boolean value" << std::endl;
-    }
+    std::string lower = s;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower == "true";
 }
 
 struct RenderGeometry {
@@ -245,6 +252,25 @@ static void renderFrameGpu(AppContext& ctx, int frameIndex) {
     SDL_SetRenderDrawColor(ctx.ren, r, g, b, 255);
     SDL_RenderClear(ctx.ren);
     SDL_RenderTexture(ctx.ren, sp.tex, &src, &dst);
+    if (ctx.state->webDisplaying) {
+
+        SDL_Surface* surf = SDL_RenderReadPixels(ctx.ren, nullptr);
+        if (surf) {
+            size_t size = surf->h * surf->pitch;
+            memcpy(ctx.state->currentFrameRawPixels.pixels, surf->pixels, size);
+            ctx.state->currentFrameRawPixels.size = size;
+            WebPEncodeRGBA(ctx.state->currentFrameRawPixels.pixels, surf->w, surf->h, surf->w+4, 80, ctx.state->rawFrame);
+            SDL_DestroySurface(surf);
+        }
+        //downloadPixelsFromGPUTexture(?, ctx.state->currentFrameRawPixels.pixels, ctx.state->currentFrameRawPixels.size, ctx);
+        // тут требуется переход на уровень рендера ниже, придётся писать шейдеры и работать с видюхой прямо
+
+        try {
+        WS::send(ctx.state->rawFrame);
+        } catch (...) {
+            std::cerr << "WS send failed" << std::endl;
+        }
+    }
     if (ctx.state->showContextMenu) {
         const int menuWidth = 220;
         const int itemHeight = 24;
@@ -254,7 +280,6 @@ static void renderFrameGpu(AppContext& ctx, int frameIndex) {
         int menuX = ctx.state->contextMenuX;
         int menuY = ctx.state->contextMenuY;
 
-        // Ограничить меню в пределах окна
         int winW, winH;
         SDL_GetWindowSize(ctx.win, &winW, &winH);
         if (menuX + menuWidth > winW) menuX = winW - menuWidth;
@@ -262,17 +287,13 @@ static void renderFrameGpu(AppContext& ctx, int frameIndex) {
         menuX = std::max(0, menuX);
         menuY = std::max(0, menuY);
 
-        // Фон
         SDL_SetRenderDrawColor(ctx.ren, 40, 40, 40, 255);
         SDL_FRect bg{ static_cast<float>(menuX), static_cast<float>(menuY),
                      static_cast<float>(menuWidth), static_cast<float>(menuHeight) };
         SDL_RenderFillRect(ctx.ren, &bg);
 
-        // Граница
         SDL_SetRenderDrawColor(ctx.ren, 200, 200, 200, 255);
         SDL_RenderRect(ctx.ren, &bg);
-
-        // Пункты меню
         for (size_t i = 0; i < ctx.contextMenuItems.size(); ++i) {
             if (ctx.state->contextMenuTextures[i]) {
                 int itemY = menuY + static_cast<int>(i) * itemHeight;
@@ -292,7 +313,6 @@ static void renderFrameGpu(AppContext& ctx, int frameIndex) {
         }
     }
     if (ctx.state->debug) {
-        // Подсчёт FPS
         static Uint32 lastTime = 0;
         static int frameCount = 0;
         static int displayedFps = 0;
@@ -529,6 +549,54 @@ static void renderFrameCpu(AppContext& ctx, int frameIndex) {
     Uint32* dstPixels = static_cast<Uint32*>(winSurface->pixels);
     std::memcpy(dstPixels, frameBuffer.data(), frameBuffer.size() * sizeof(Uint32));
 
-
     SDL_UpdateWindowSurface(ctx.win);
+}
+
+void downloadPixelsFromGPUTexture(SDL_GPUTexture* gpu_texture, uint8_t** out_pixels, size_t* out_size, AppContext& ctx) {
+    int width = ctx.cfg.windowWidth;
+    int height = ctx.cfg.windowHeight;
+    size_t pixel_size = 4;
+    size_t buffer_size = width * height * pixel_size;
+
+    SDL_GPUDevice* device = SDL_GetGPURendererDevice(ctx.ren);
+    if (!device) {
+        std::cout << "gpu device trouble" << std::endl;
+        return;
+    }
+
+    SDL_GPUTransferBufferCreateInfo tbci = {};
+    tbci.size = buffer_size;
+    tbci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    SDL_GPUTransferBuffer* transfer_buffer = SDL_CreateGPUTransferBuffer(device, &tbci);
+
+    SDL_GPUCommandBuffer* cmd_buf = SDL_AcquireGPUCommandBuffer(device);
+    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
+
+    SDL_GPUTextureRegion src_region = {};
+    src_region.texture = gpu_texture;
+    src_region.w = width;
+    src_region.h = height;
+    src_region.d = 1;
+
+    SDL_GPUTextureTransferInfo dst_info = {};
+    dst_info.transfer_buffer = transfer_buffer;
+    dst_info.offset = 0;
+
+    SDL_DownloadFromGPUTexture(copy_pass, &src_region, &dst_info);
+    SDL_EndGPUCopyPass(copy_pass);
+
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_buf);
+
+    SDL_WaitForGPUFences(device, true, &fence, 1);
+
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer_buffer, false);
+    if (mapped) {
+        *out_size = buffer_size;
+        *out_pixels = (uint8_t*)malloc(buffer_size);
+        memcpy(*out_pixels, mapped, buffer_size);
+        SDL_UnmapGPUTransferBuffer(device, transfer_buffer);
+    }
+
+    SDL_ReleaseGPUFence(device, fence);
+    SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
 }

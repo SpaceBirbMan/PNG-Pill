@@ -14,7 +14,7 @@ static void createDefaultConfig(const fs::path& path) {
         << "bgColor = #000000\n"
         << "windowWidth = 800\n"
         << "windowHeight = 600\n"
-        << "inputDeviceName = default\n"
+        << "micName = default\n"
         << "micThreshold = 0.0075\n"
         << "micGain = 1.0\n"
         << "spriteDir = \n"
@@ -45,7 +45,7 @@ static AppConfig loadConfig(const fs::path& dir) {
         if (key == "bgColor") cfg.bgColor = hexStringToUint32(val);
         else if (key == "windowWidth")  cfg.windowWidth = std::stoi(val);
         else if (key == "windowHeight") cfg.windowHeight = std::stoi(val);
-        else if (key == "inputDeviceName") cfg.inputDeviceName = val;
+        else if (key == "micName") cfg.micName = val;
         else if (key == "micThreshold") cfg.micThreshold = std::stof(val);
         else if (key == "micGain")      cfg.micGain = std::stof(val);
         else if (key == "spriteDir")    cfg.spriteDir = val;
@@ -595,7 +595,7 @@ static bool initSDL(AppContext& ctx, const AppConfig& cfg) {
     spec.format = SDL_AUDIO_F32;
     spec.channels = 1;
     spec.freq = 8000;
-    SDL_AudioDeviceID dev = findMicByName(cfg.inputDeviceName);
+    SDL_AudioDeviceID dev = findMicByName(cfg.micName);
     ctx.stream = SDL_OpenAudioDeviceStream(dev, &spec, nullptr, nullptr);
     if (ctx.stream) {
         if (SDL_ResumeAudioStreamDevice(ctx.stream) < 0) {
@@ -622,6 +622,8 @@ int main(int argc, char** argv) {
 
     MainLoopState* state = new MainLoopState();
     ctx.state = state;
+
+    WS::openWebSocket(ctx.cfg.webSocket);
 
     if (cfg.globalHookingAcceptable) {
         InstallGlobalKeyboardHook(); // загружается та версия хука, которая нужна платформе (точнее будет, как сделаю)
@@ -663,6 +665,7 @@ int main(int argc, char** argv) {
     }
     SDL_DestroyRenderer(ctx.ren);
     SDL_DestroyWindow(ctx.win);
+    WS::closeWebSocket(ctx.cfg.webSocket);
     SDL_Quit();
     return 0;
 }
