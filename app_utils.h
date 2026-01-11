@@ -29,6 +29,8 @@ enum class SpriteAlignment{
     Centered    // центрировать по bounding box
 };
 
+
+
 struct AppConfig {
     bool debugMode = true;
     uint32_t bgColor = 0x000000;
@@ -48,9 +50,8 @@ struct AppConfig {
     bool globalHookingAcceptable = false;
     bool useCpuRendering = false;
     SpriteAlignment alignment = SpriteAlignment::Centered;
-    bool usebilinearinterpolationoncpu = true;
+    bool usebilinearinterpolationoncpu = true; // требует изменения алгоритма
     int numberOfThreadsForCpuRender = -1; // то есть автоматическое определение (должно быть (потом))
-    int webSocket = 8080;
 };
 
 struct ContextMenuItem {
@@ -62,6 +63,7 @@ struct RawPixels {
     uint8_t* pixels = nullptr;
     size_t size = 0;
 };
+
 
 struct MainLoopState {
     bool running = true;
@@ -82,6 +84,7 @@ struct MainLoopState {
     float breathScale = 1.0f;
 
     RawPixels currentFrameRawPixels;
+    struct lws* wsi = nullptr;
 
     Uint32 lastBlink = 0;
     Uint32 blinkStart = 0;
@@ -107,14 +110,12 @@ struct MainLoopState {
     const Uint32 DOUBLE_CLICK_THRESHOLD_MS = 500;
     const int DOUBLE_CLICK_THRESHOLD_PX = 5;
 
-    uint8_t** rawFrame = nullptr;
-
     std::vector<SDL_Texture*> contextMenuTextures;
     TTF_Font* menuFont = nullptr;
 
 };
 
-struct AppContext {
+struct AppContext { // todo: Выделить структуры нормально
     SDL_Window* win;
     SDL_Renderer* ren;
     SDL_Surface* winSurface = nullptr;
@@ -259,17 +260,11 @@ static void renderFrameGpu(AppContext& ctx, int frameIndex) {
             size_t size = surf->h * surf->pitch;
             memcpy(ctx.state->currentFrameRawPixels.pixels, surf->pixels, size);
             ctx.state->currentFrameRawPixels.size = size;
-            WebPEncodeRGBA(ctx.state->currentFrameRawPixels.pixels, surf->w, surf->h, surf->w+4, 80, ctx.state->rawFrame);
+            sendWebP(ctx.state->wsi, ctx.state->currentFrameRawPixels.pixels, surf->w, surf->h);
             SDL_DestroySurface(surf);
         }
         //downloadPixelsFromGPUTexture(?, ctx.state->currentFrameRawPixels.pixels, ctx.state->currentFrameRawPixels.size, ctx);
         // тут требуется переход на уровень рендера ниже, придётся писать шейдеры и работать с видюхой прямо
-
-        try {
-        WS::send(ctx.state->rawFrame);
-        } catch (...) {
-            std::cerr << "WS send failed" << std::endl;
-        }
     }
     if (ctx.state->showContextMenu) {
         const int menuWidth = 220;
@@ -600,3 +595,33 @@ void downloadPixelsFromGPUTexture(SDL_GPUTexture* gpu_texture, uint8_t** out_pix
     SDL_ReleaseGPUFence(device, fence);
     SDL_ReleaseGPUTransferBuffer(device, transfer_buffer);
 }
+
+static int callback_websocket(struct lws* wsi, enum lws_callback_reasons reason,
+                              void* user, void* in, size_t len) {
+    switch (reason) {
+    case LWS_CALLBACK_CLIENT_ESTABLISHED:
+    {
+        AppContext* ctx = (AppContext*)lws_context_user(lws_get_context(wsi));
+        ctx->state->wsi = wsi;
+        ctx->state->webDisplaying = true;
+    }
+    break;
+    case LWS_CALLBACK_CLIENT_CLOSED:
+    {
+        AppContext* ctx = (AppContext*)lws_context_user(lws_get_context(wsi));
+        ctx->state->wsi = nullptr;
+        ctx->state->webDisplaying = false;
+    }
+    break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+static const struct lws_protocols protocols[] = {
+    { "http-only", callback_http, 0, 0, 0, NULL, 0 },
+    { "my-protocol", callback_websocket, 0, 0, 0, NULL, 0 },
+    { NULL, NULL, 0, 0, 0, NULL, 0 }
+};
+

@@ -7,7 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(SDL3 REQUIRED CONFIG)
 find_package(SDL3_image REQUIRED CONFIG)
 find_package(SDL3_ttf REQUIRED CONFIG)
-find_package(SDL3_ttf REQUIRED CONFIG)
 
 find_package(WebP REQUIRED)
 find_package(Libwebsockets REQUIRED)
@@ -17,6 +16,8 @@ pkg_check_modules(LIBWEBSOCKETS REQUIRED IMPORTED_TARGET libwebsockets)
 file(GLOB SOURCES CONFIGURE_DEPENDS
     "*.cpp"
     "*.h"
+    "*.rc"
+    "*.md"
 )
 
 add_executable(PNGPILL ${SOURCES})
@@ -29,3 +30,6 @@ target_link_libraries(PNGPILL PRIVATE
     PkgConfig::LIBWEBSOCKETS
 )
 
+if(WIN32)
+    set(RESOURCE_FILES rec.rc)
+endif()

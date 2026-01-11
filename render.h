@@ -1,6 +1,6 @@
 #ifndef RENDER_H
 #define RENDER_H
 
-// нахуя?
+// потом
 
 #endif // RENDER_H

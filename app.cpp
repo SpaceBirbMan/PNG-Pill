@@ -21,8 +21,14 @@ static void createDefaultConfig(const fs::path& path) {
         << "enableBreathing = true\n"
         << "enableShaking = true\n"
         << "shakingAmplitude = 1.0\n"
-        << "shakingFrequency = 1.0\n"
-        << "fps = 60\n";
+        << "shakingFrequency = 1.0\n" // силу дыхания звбыл
+        << "fps = 60\n"
+        << "spriteAlignment = AsIs";
+}
+
+static SpriteAlignment parseAlignment(std::string str) {
+    if (str == "Centered") return SpriteAlignment::Centered;
+    return SpriteAlignment::AsIs;
 }
 
 static AppConfig loadConfig(const fs::path& dir) {
@@ -56,10 +62,10 @@ static AppConfig loadConfig(const fs::path& dir) {
         else if (key == "shakingAmplitude") cfg.shakingAmp = std::stof(val);
         else if (key == "shakingFrequency") cfg.shakingFreq = std::stof(val);
         else if (key == "fps")          cfg.fps = std::stoi(val);
+        else if (key == "spriteAlignment") cfg.alignment = parseAlignment(val);
     }
     return cfg;
 }
-
 
 static SDL_AudioDeviceID findMicByName(const std::string& name) {
     int num = 0;
@@ -479,6 +485,7 @@ static void runMainLoop(AppContext& ctx) {
 
     while (ctx.state->running) {
         Uint32 frameStart = SDL_GetTicks();
+        // lws_service(context, 0); fixme: занести контекст в MainLoopState
         handleEvents(ctx);
         updateTiming(ctx);
         updateAudioState(ctx);
@@ -623,28 +630,60 @@ int main(int argc, char** argv) {
     MainLoopState* state = new MainLoopState();
     ctx.state = state;
 
-    WS::openWebSocket(ctx.cfg.webSocket);
+    struct lws_context_creation_info info;
+    memset(&info, 0, sizeof(info));
 
-    if (cfg.globalHookingAcceptable) {
-        InstallGlobalKeyboardHook(); // загружается та версия хука, которая нужна платформе (точнее будет, как сделаю)
+    info.port = CONTEXT_PORT_NO_LISTEN;
+    info.protocols = protocols;
+    info.gid = -1;
+    info.uid = -1;
+    info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    info.user = &ctx;
+
+    struct lws_context* context = lws_create_context(&info);
+    if (!context) {
+        fprintf(stderr, "lws init failed\n");
+        return -1;
     }
 
+    struct lws_client_connect_info i;
+    memset(&i, 0, sizeof(i));
+    i.context = context;
+    i.address = "localhost";      // или IP сервера
+    i.port = 3100;
+    i.path = "/";
+    i.host = i.address;
+    i.origin = i.address;
+    i.protocol = "my-protocol";
+    i.ssl_connection = 0;
+
+    lws* wsi = lws_client_connect_via_info(&i);
+    if (!wsi) {
+        fprintf(stderr, "lws connect failed\n");
+        lws_context_destroy(context);
+        return -1;
+    }
+
+    // if (cfg.globalHookingAcceptable) {
+    //     InstallGlobalKeyboardHook(); // загружается та версия хука, которая нужна платформе (точнее будет, как сделаю)
+    // }
+
     ctx.contextMenuItems = {
-        { "Перечитать конфиг", [&ctx]() {
-             ctx.state->showContextMenu = false;
-         }},
+        // { "Перечитать конфиг", [&ctx]() {
+        //      ctx.state->showContextMenu = false;
+        //  }},
         { "Дебаг-режим", [&ctx]() {
              ctx.state->showContextMenu = false;
              ctx.state->debug = !ctx.state->debug;
-         }},
-        { "Поставить тут PatPat", [&ctx]() {
-             ctx.state->showContextMenu = false;
-             // todo: Прикрутить твич
-         }},
-        { "Использовать WebRender", [&ctx]() {
-             ctx.state->showContextMenu = false;
-             // todo: Прикрутить веб-рендер и сокеты (сделать веб-рендер)
          }}
+        // { "Поставить тут PatPat", [&ctx]() {
+        //      ctx.state->showContextMenu = false;
+        //      // todo: Прикрутить твич
+        //  }},
+        // { "Использовать WebRender", [&ctx]() {
+        //      ctx.state->showContextMenu = false;
+        //      // todo: Прикрутить веб-рендер и сокеты (сделать веб-рендер)
+        //  }}
     };
      
 
@@ -657,7 +696,7 @@ int main(int argc, char** argv) {
 
     runMainLoop(ctx);
 
-    UninstallGlobalKeyboardHook();
+    // UninstallGlobalKeyboardHook();
 
     if (ctx.stream) SDL_DestroyAudioStream(ctx.stream);
     for (auto& s : ctx.sprites) {
@@ -665,7 +704,7 @@ int main(int argc, char** argv) {
     }
     SDL_DestroyRenderer(ctx.ren);
     SDL_DestroyWindow(ctx.win);
-    WS::closeWebSocket(ctx.cfg.webSocket);
+    lws_context_destroy(context);
     SDL_Quit();
     return 0;
 }
