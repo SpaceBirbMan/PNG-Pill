@@ -617,10 +617,32 @@ static bool initSDL(AppContext& ctx, const AppConfig& cfg) {
     return true;
 }
 
+fs::path getExecutableDir() { // должно решать баг с пропажей конфига при очень спецефической переустановке (как минимум)
+#ifdef _WIN32
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    return fs::path(buffer).parent_path();
+#elif __APPLE__
+    char buffer[1024];
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) == 0) {
+        return fs::path(buffer).parent_path();
+    }
+    return fs::current_path(); // fallback
+#else // Linux и др. Unix
+    char buffer[1024];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer)-1);
+    if (len != -1) {
+        buffer[len] = '\0';
+        return fs::path(buffer).parent_path();
+    }
+    return fs::current_path(); // fallback
+#endif
+}
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    fs::path exeDir = fs::current_path();
+    fs::path exeDir = getExecutableDir();
     AppConfig cfg = loadConfig(exeDir);
 
     AppContext ctx;
