@@ -40,7 +40,7 @@
 - shakingAmplitude = 1.0
 - shakingFrequency = 1.0
 - fps = 60 
-- spriteAlignment = AsIs - центровка (по умолчанию выключена)
+- spriteAlignment = AsIs - центровка (по умолчанию выключена), Centered - автоматическая центровка
 
 ##### p.s Я знаю, это выглядит плохо, но надо же с чего то начинать
 
